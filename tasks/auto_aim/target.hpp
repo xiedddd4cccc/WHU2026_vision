@@ -23,7 +23,6 @@ public:
   bool jumped;
   int last_id;  // debug only
 
-
   Target() = default;
   Target(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
@@ -33,7 +32,6 @@ public:
   void predict(std::chrono::steady_clock::time_point t);
   void predict(double dt);
   void update(const Armor & armor);
-  void update_outpost_height_aware(const Armor & armor, int id);
 
   Eigen::VectorXd ekf_x() const;
   const tools::ExtendedKalmanFilter & ekf() const;

@@ -14,10 +14,9 @@ namespace auto_aim
 
 struct AimPoint {
     bool valid;
-    bool fire;
     Eigen::Vector4d xyza;
-    AimPoint(bool v = false, bool f = false, const Eigen::Vector4d& a = Eigen::Vector4d::Zero())
-        : valid(v), fire(f), xyza(a) {}
+    AimPoint(bool v = false,  const Eigen::Vector4d& a = Eigen::Vector4d::Zero())
+        : valid(v),  xyza(a) {}
 };
 
 class Aimer

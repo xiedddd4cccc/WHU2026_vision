@@ -6,11 +6,11 @@ sleep 10
 cd /home/wheeltec/project/WHU2026_vision|| exit
 
 # 确保主程序有执行权限
-chmod +x ./build/mpc_standard
+chmod +x ./build/hero
 chmod +x ./watchdog.sh
 
 # 1️⃣ 在新终端中启动主程序并保持窗口
-gnome-terminal -- bash -c "./build/mpc_standard; echo '程序已结束，按任意键关闭...'; read -n1"
+gnome-terminal -- bash -c "./build/hero; echo '程序已结束，按任意键关闭...'; read -n1"
 
 # 2️⃣ 在后台运行 watchdog（记录日志）
 screen -L -Logfile logs/$(date '+%Y-%m-%d_%H-%M-%S').screenlog -d -m bash -c "./watchdog.sh"

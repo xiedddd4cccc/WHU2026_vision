@@ -99,7 +99,7 @@ void Target::predict(double dt)
     v2 = 0.1;  // 前哨站角加速度方差
   } else {
     v1 = 100;  // 加速度方差
-    v2 = 350;  // 角加速度方差
+    v2 = 400;  // 角加速度方差
   }
   auto a = dt * dt * dt * dt / 4;
   auto b = dt * dt * dt / 2;
@@ -135,49 +135,6 @@ void Target::predict(double dt)
   ekf_.predict(F, Q, f);
 }
 
-//前哨站旋转中心自适应确定
-void Target::update_outpost_height_aware(const Armor & armor, int id)
-{
-  static constexpr double dz_list[3] = {+0.1, 0.0, -0.1};
-
-  double best_cost = 1e9;
-  Armor best_armor = armor;
-
-  for (double dz : dz_list) {
-    Armor armor_try = armor;
-    armor_try.ypd_in_world[2] -= dz;
-
-    // 用完整观测模型预测 ypda
-    Eigen::Vector3d xyz_pred = h_armor_xyz(ekf_.x, id);
-    Eigen::Vector3d ypd_pred = tools::xyz2ypd(xyz_pred);
-    double angle_pred =
-      tools::limit_rad(ekf_.x[6] + id * 2 * CV_PI / armor_num_);
-
-    Eigen::Vector4d z_pred;
-    z_pred << ypd_pred[0], ypd_pred[1], ypd_pred[2], angle_pred;
-
-    Eigen::Vector4d z_meas;
-    z_meas << armor_try.ypd_in_world[0],
-              armor_try.ypd_in_world[1],
-              armor_try.ypd_in_world[2],
-              armor_try.ypr_in_world[0];
-
-    Eigen::Vector4d innov = z_meas - z_pred;
-    innov[0] = tools::limit_rad(innov[0]);
-    innov[1] = tools::limit_rad(innov[1]);
-    innov[3] = tools::limit_rad(innov[3]);
-
-    double cost = innov.squaredNorm();
-
-    if (cost < best_cost) {
-      best_cost = cost;
-      best_armor = armor_try;
-    }
-  }
-
-  // 直接复用原来的 EKF 更新
-  update_ypda(best_armor, id);
-}
 void Target::update(const Armor & armor)
 {
   // 装甲板匹配
@@ -224,11 +181,7 @@ void Target::update(const Armor & armor)
   last_id = id;
   update_count_++;
 
-  if (name == ArmorName::outpost) {
-    update_outpost_height_aware(armor, id);
-  } else {
-    update_ypda(armor, id);
-  }
+  update_ypda(armor, id);
 }
 
 void Target::update_ypda(const Armor & armor, int id)
@@ -314,12 +267,25 @@ bool Target::convergened()
 Eigen::Vector3d Target::h_armor_xyz(const Eigen::VectorXd & x, int id) const
 {
   auto angle = tools::limit_rad(x[6] + id * 2 * CV_PI / armor_num_);
-  auto use_l_h = (armor_num_ == 4) && (id == 1 || id == 3);
 
-  auto r = (use_l_h) ? x[8] + x[9] : x[8];
+  double r = x[8];
+  if (armor_num_ == 4 && (id == 1 || id == 3)) r = x[8] + x[9];
+
   auto armor_x = x[0] - r * std::cos(angle);
   auto armor_y = x[2] - r * std::sin(angle);
-  auto armor_z = (use_l_h) ? x[4] + x[10] : x[4];
+
+  double armor_z = x[4];
+
+  if (armor_num_ == 4 && (id == 1 || id == 3)) {
+    armor_z = x[4] + x[10];
+  } else if (armor_num_ == 3) {
+    if (id == 0)
+      armor_z = x[4];  
+    else if (id == 1)
+      armor_z = x[4] + x[9];  
+    else
+      armor_z = x[4] + x[10];  
+  }
 
   return {armor_x, armor_y, armor_z};
 }
@@ -327,38 +293,50 @@ Eigen::Vector3d Target::h_armor_xyz(const Eigen::VectorXd & x, int id) const
 Eigen::MatrixXd Target::h_jacobian(const Eigen::VectorXd & x, int id) const
 {
   auto angle = tools::limit_rad(x[6] + id * 2 * CV_PI / armor_num_);
-  auto use_l_h = (armor_num_ == 4) && (id == 1 || id == 3);
 
-  auto r = (use_l_h) ? x[8] + x[9] : x[8];
-  auto dx_da = r * std::sin(angle);
-  auto dy_da = -r * std::cos(angle);
+  bool use_l_for_r = (armor_num_ == 4) && (id == 1 || id == 3);
+  double r = use_l_for_r ? x[8] + x[9] : x[8];
 
-  auto dx_dr = -std::cos(angle);
-  auto dy_dr = -std::sin(angle);
-  auto dx_dl = (use_l_h) ? -std::cos(angle) : 0.0;
-  auto dy_dl = (use_l_h) ? -std::sin(angle) : 0.0;
+  double dx_da = r * std::sin(angle);
+  double dy_da = -r * std::cos(angle);
+  double dx_dr = -std::cos(angle);
+  double dy_dr = -std::sin(angle);
+  double dx_dl = use_l_for_r ? -std::cos(angle) : 0.0;
+  double dy_dl = use_l_for_r ? -std::sin(angle) : 0.0;
 
-  auto dz_dh = (use_l_h) ? 1.0 : 0.0;
+  double dz_dl = 0.0;
+  double dz_dh = 0.0;
 
-  // clang-format off
+  if (armor_num_ == 3) {
+    if (id == 1) {
+      dz_dl = 1.0;   // z = z0 + x[9]
+    } else if (id == 2) {
+      dz_dh = 1.0;   // z = z0 + x[10] 
+    }
+    // id == 0: 保持 0
+  }
+  else if (armor_num_ == 4) {
+    if (id == 1 || id == 3) {
+      dz_dh = 1.0;   // z = z0 + x[10]
+    }
+  }
+
   Eigen::MatrixXd H_armor_xyza{
     {1, 0, 0, 0, 0, 0, dx_da, 0, dx_dr, dx_dl,     0},
     {0, 0, 1, 0, 0, 0, dy_da, 0, dy_dr, dy_dl,     0},
-    {0, 0, 0, 0, 1, 0,     0, 0,     0,     0, dz_dh},
+    {0, 0, 0, 0, 1, 0,     0, 0,     0, dz_dl, dz_dh},
     {0, 0, 0, 0, 0, 0,     1, 0,     0,     0,     0}
   };
-  // clang-format on
 
   Eigen::VectorXd armor_xyz = h_armor_xyz(x, id);
   Eigen::MatrixXd H_armor_ypd = tools::xyz2ypd_jacobian(armor_xyz);
-  // clang-format off
+
   Eigen::MatrixXd H_armor_ypda{
     {H_armor_ypd(0, 0), H_armor_ypd(0, 1), H_armor_ypd(0, 2), 0},
     {H_armor_ypd(1, 0), H_armor_ypd(1, 1), H_armor_ypd(1, 2), 0},
     {H_armor_ypd(2, 0), H_armor_ypd(2, 1), H_armor_ypd(2, 2), 0},
     {                0,                 0,                 0, 1}
   };
-  // clang-format on
 
   return H_armor_ypda * H_armor_xyza;
 }

@@ -15,6 +15,7 @@
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
 #include "tools/plotter.hpp"
+#include "tools/recorder.hpp"
 using namespace std::chrono_literals;
 // ==================== 命令行参数 ====================
 const std::string keys =
@@ -44,7 +45,7 @@ int main(int argc, char * argv[])
   auto_aim::Tracker tracker(config_path, solver);
   auto_aim::Aimer aimer(config_path);
   io::Gimbal gimbal(config_path);
-
+  //tools::Recorder recorder(30.0);
   cv::Mat img;
 
   // -------------------- FPS 统计 --------------------
@@ -63,6 +64,7 @@ int main(int argc, char * argv[])
     // -------------------- 云台姿态 --------------------
     constexpr auto IMU_DELAY = 2ms;
     Eigen::Quaterniond gimbal_q = gimbal.q(frame_start-IMU_DELAY);
+    //recorder.record(img, gimbal_q, frame_start);
     solver.set_R_gimbal2world(gimbal_q);
     Eigen::Vector3d ypr =
       tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0);
@@ -70,7 +72,7 @@ int main(int argc, char * argv[])
     // -------------------- 自瞄主流程 --------------------
     auto armors = yolo.detect(img, 0);
     auto targets = tracker.track(armors, frame_start);
-    auto command = aimer.aim(targets, frame_start, 13.3, true, ypr);
+    auto command = aimer.aim(targets, frame_start, 12.4, true, ypr);
 
     // -------------------- 串口发送 --------------------
     gimbal.send(
@@ -196,6 +198,14 @@ int main(int argc, char * argv[])
 
       // -------- Plotter --------
       nlohmann::json data;
+      if(!targets.empty())
+      {
+        auto target =targets.front();
+        Eigen::VectorXd x =target.ekf_x();
+        data["r"]=x[8];
+        data["h1"]=x[9];
+        data["h2"]=x[10];
+      } 
       data["fps"] = fps;
       data["gimbal_yaw"] = euler[0];
       data["gimbal_pitch"] = euler[1];
