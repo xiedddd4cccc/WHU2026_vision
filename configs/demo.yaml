@@ -1,5 +1,5 @@
-enemy_color: "red"
-#enemy_color: "blue"
+#enemy_color: "red"
+enemy_color: "blue"
 
 # #####-----神经网络参数-----#####
 # yolo_name: yolov5
@@ -54,7 +54,7 @@ comming_angle: 60 # degree
 leaving_angle: 10 # degree
 decision_speed: 8 # rad/s
 high_speed_delay_time: 0.10 # s
-low_speed_delay_time: 0.10 # s
+low_speed_delay_time: 0.15 # s
 
 #####-----shooter参数-----#####
 first_tolerance: 2 # 近距离射击容差，degree
@@ -73,8 +73,8 @@ auto_fire: true # 是否由自瞄控制射击
 # vid_pid: "f622:d13a"
 
 camera_name: "daheng"   # <-- 启用大恒相机
-exposure_ms: 7  # 曝光时间，单位是毫秒
-gain: 10.0               # 增益
+exposure_ms: 8  # 曝光时间，单位是毫秒
+gain: 20.0               # 增益
 vid_pid: "0000:0000"    # GxAPI 通常使用序列号或 IP，但保留此项以兼容现有结构
 
 # -1  0  0

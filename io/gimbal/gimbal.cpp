@@ -1,11 +1,12 @@
 #include "gimbal.hpp"
 
+#include <iomanip>  // 添加这行以使用 std::setw
+#include <sstream>  // 确保已经包含，用于 std::stringstream
+
 #include "tools/crc.hpp"
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
 #include "tools/yaml.hpp"
-#include <iomanip>  // 添加这行以使用 std::setw
-#include <sstream>   // 确保已经包含，用于 std::stringstream
 
 namespace io
 {
@@ -131,20 +132,25 @@ void Gimbal::send(
 //     return false;
 //   }
 // }
-bool Gimbal::read(uint8_t* buffer, size_t size)
+bool Gimbal::read(uint8_t * buffer, size_t size)
 {
   size_t total_read = 0;
   auto start = std::chrono::steady_clock::now();
 
   while (total_read < size) {
-    size_t n = serial_.read(buffer + total_read, size - total_read);
-    total_read += n;
+    if (quit_) return false;  // 防止程序退出时死锁
 
-    if (n == 0) {
-      // 超时保护，防止死等
+    size_t n = serial_.read(buffer + total_read, size - total_read);
+
+    if (n > 0) {
+      total_read += n;
+      start = std::chrono::steady_clock::now();  // 只要读到数据，就重置超时计时器
+    } else {
+      // 超时保护
       auto now = std::chrono::steady_clock::now();
       if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count() > 100) {
-        tools::logger()->warn("[Gimbal] read timeout, read {} / {} bytes", total_read, size);
+        // 这里的警告日志可以注销，防止没连接时疯狂刷屏
+        // tools::logger()->warn("[Gimbal] read timeout, read {} / {} bytes", total_read, size);
         return false;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -160,23 +166,38 @@ void Gimbal::read_thread()
   int error_count = 0;
 
   while (!quit_) {
-    if (error_count > 5000) {
+    // 【关键修改 1】：降低重连阈值。20次超时/错误（约2秒）无法恢复，直接强制重置串口
+    if (error_count > 20) {
       error_count = 0;
-      tools::logger()->warn("[Gimbal] Too many errors, attempting to reconnect...");
+      tools::logger()->warn("[Gimbal] Link lost or misaligned, attempting to reconnect...");
       reconnect();
       continue;
     }
 
-    if (!read(reinterpret_cast<uint8_t *>(&rx_data_), sizeof(rx_data_.head))) {
+    // 【关键修改 2】：逐字节寻找帧头 'S'，防止数据错位导致永远对不齐
+    uint8_t header_byte = 0;
+    if (!read(&header_byte, 1)) {
       error_count++;
       continue;
     }
 
-    if (rx_data_.head[0] != 'S' || rx_data_.head[1] != 'P') {
+    if (header_byte != 'S') {
+      continue;  // 不是 'S'，继续吃掉底层缓冲区的垃圾数据
+    }
+
+    // 找到了 'S'，再读一个字节看是不是 'P'
+    rx_data_.head[0] = 'S';
+    if (!read(&header_byte, 1)) {
+      error_count++;
       continue;
     }
 
+    if (header_byte != 'P') {
+      continue;  // 不是 'P'，说明前面的 'S' 只是碰巧，重新找
+    }
+    rx_data_.head[1] = 'P';
 
+    // 成功对齐包头，记录时间并读取剩余包体
     auto t = std::chrono::steady_clock::now();
 
     if (!read(
@@ -186,47 +207,14 @@ void Gimbal::read_thread()
       continue;
     }
 
-    // if (!tools::check_crc16(reinterpret_cast<uint8_t *>(&rx_data_), sizeof(rx_data_))) {
-    //       // 计算期望的CRC值
-    //     uint16_t calculated_crc = tools::get_crc16(
-    //         reinterpret_cast<uint8_t *>(&rx_data_), 
-    //         sizeof(rx_data_) - sizeof(rx_data_.crc16)
-    //     );
-        
-    //     // 提取接收到的CRC值
-    //     uint16_t received_crc = rx_data_.crc16;
-        
-    //     tools::logger()->warn("[Gimbal] CRC16 check failed.");
-    //     tools::logger()->warn("[Gimbal] Received CRC: 0x{:04X}", received_crc);
-    //     tools::logger()->warn("[Gimbal] Calculated CRC: 0x{:04X}", calculated_crc);
-    //     tools::logger()->warn("[Gimbal] Data length: {} bytes", sizeof(rx_data_));
-        
-    //     // 打印数据包内容（十六进制）
-    //     std::stringstream hex_dump;
-    //     const uint8_t* data = reinterpret_cast<const uint8_t*>(&rx_data_);
-    //     for (size_t i = 0; i < sizeof(rx_data_); ++i) {
-    //         hex_dump << std::hex << std::setw(2) << std::setfill('0') 
-    //                 << static_cast<int>(data[i]) << " ";
-    //         if ((i + 1) % 16 == 0) hex_dump << "\n";
-    //     }
-    //     tools::logger()->warn("[Gimbal] Data dump:\n{}", hex_dump.str());
-        
-    //     // 特别打印CRC字段的位置
-    //     size_t crc_offset = sizeof(rx_data_) - 2;
-    //     tools::logger()->warn("[Gimbal] CRC field at offset {}: {:#04x} {:#04x}", 
-    //                         crc_offset, data[crc_offset], data[crc_offset + 1]);
-        
-    //     error_count++;
-    //     continue;
-    // }
+    // CRC 校验
     if (!tools::check_crc16(reinterpret_cast<uint8_t *>(&rx_data_), sizeof(rx_data_))) {
-      //tools::logger()->debug("[Gimbal] CRC16 check passed.");
-    // 处理有效数据
-      
+      tools::logger()->debug("[Gimbal] CRC16 check failed.");
+      error_count++;
       continue;
-    } 
-    
+    }
 
+    // --- 成功读到完整且正确的一帧，清零错误计数 ---
     error_count = 0;
     Eigen::Quaterniond q(rx_data_.q[0], rx_data_.q[1], rx_data_.q[2], rx_data_.q[3]);
     queue_.push({q, t});
@@ -262,22 +250,23 @@ void Gimbal::read_thread()
 
   tools::logger()->info("[Gimbal] read_thread stopped.");
 }
+
 void Gimbal::reconnect()
 {
   int max_retry_count = 10;
   for (int i = 0; i < max_retry_count && !quit_; ++i) {
-    tools::logger()->warn("[Gimbal] Reconnecting serial, attempt {}/{}...", i + 1, max_retry_count);
+    // tools::logger()->warn("[Gimbal] Reconnecting serial, attempt {}/{}...", i + 1, max_retry_count);
     try {
       serial_.close();
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));  // 给硬件一点断开的时间
     } catch (...) {
     }
 
     try {
-      serial_.open();  // 尝试重新打开
+      serial_.open();  // 重新打开串口会清空底层操作系统和驱动的脏数据缓冲区
       queue_.clear();
       tools::logger()->info("[Gimbal] Reconnected serial successfully.");
-      break;
+      break;  // 成功则跳出重试循环
     } catch (const std::exception & e) {
       tools::logger()->warn("[Gimbal] Reconnect failed: {}", e.what());
       std::this_thread::sleep_for(std::chrono::seconds(1));

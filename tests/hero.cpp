@@ -231,6 +231,7 @@ int main(int argc, char * argv[])
       data["track_state"] = tracker_state;
       data["control"] = command.control;
       data["fire"]=command.shoot;
+      data["speed"]=gs.bullet_speed;
 
       plotter.plot(data);
 
