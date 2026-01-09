@@ -48,23 +48,23 @@ max_temp_lost_count: 15
 outpost_max_temp_lost_count: 75
 
 #####-----aimer参数-----#####
-yaw_offset: 0 # degree -2.5
+yaw_offset: -1 # degree -2.5
 pitch_offset: 0 # degree 2
 comming_angle: 60 # degree
 leaving_angle: 20 # degree
 decision_speed: 8 # rad/s
-high_speed_delay_time: 0.025 # s
-low_speed_delay_time: 0.025 # s
+high_speed_delay_time: 0.1 # s
+low_speed_delay_time: 0.1 # s
 
 #####-----shooter参数-----#####
-first_tolerance: 3 # 近距离射击容差，degree
-second_tolerance: 2 # 远距离射击容差，degree
+first_tolerance: 2 # 近距离射击容差，degree
+second_tolerance: 1 # 远距离射击容差，degree
 judge_distance: 2 #距离判断阈值
 auto_fire: true # 是否由自瞄控制射击
 
 # camera_name: "hikrobot"
-# exposure_ms: 2
-# gain: 16
+# exposure_ms: 20
+# gain: 30
 # vid_pid: "2bdf:0001"
 
 # camera_name: "mindvision"
@@ -73,7 +73,7 @@ auto_fire: true # 是否由自瞄控制射击
 # vid_pid: "f622:d13a"
 
 camera_name: "daheng"   # <-- 启用大恒相机
-exposure_ms: 5  # 曝光时间，单位是毫秒
+exposure_ms: 7  # 曝光时间，单位是毫秒
 gain: 10.0               # 增益
 vid_pid: "0000:0000"    # GxAPI 通常使用序列号或 IP，但保留此项以兼容现有结构
 
@@ -107,21 +107,13 @@ com_port: "/dev/gimbal"
 #####-----planner-----#####
 fire_thresh: 0.003
 
-# max_yaw_acc: 50
-# Q_yaw: [1000, 10]
-# R_yaw: [0.1]
+max_yaw_acc: 20
+Q_yaw:  [9e6, 1]
+R_yaw: [10]
 
-max_yaw_acc: 50
-Q_yaw: [9e6, 0]
-R_yaw: [1]
-
-max_pitch_acc: 100
-Q_pitch: [9e6,0]
-R_pitch: [1]
-
-# max_pitch_acc: 100
-# Q_pitch: [1000,10]
-# R_pitch: [0.1]
+max_pitch_acc: 15
+Q_pitch: [9e6, 1]
+R_pitch: [10]
 
 #####-----buff_detector参数-----#####
 detect:

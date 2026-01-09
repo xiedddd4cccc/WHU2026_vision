@@ -23,6 +23,12 @@ public:
   bool jumped;
   int last_id;  // debug only
 
+  // yaw 差分用
+  bool has_last_yaw_ = false;
+  double last_yaw_ = 0.0;
+  std::chrono::steady_clock::time_point last_yaw_time_;
+  int last_yaw_id_ = -1;
+
   Target() = default;
   Target(
     const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
@@ -32,6 +38,7 @@ public:
   void predict(std::chrono::steady_clock::time_point t);
   void predict(double dt);
   void update(const Armor & armor);
+  void update_outpost_height_aware(const Armor & armor, int id);
 
   Eigen::VectorXd ekf_x() const;
   const tools::ExtendedKalmanFilter & ekf() const;
@@ -59,15 +66,6 @@ private:
 
   Eigen::Vector3d h_armor_xyz(const Eigen::VectorXd & x, int id) const;
   Eigen::MatrixXd h_jacobian(const Eigen::VectorXd & x, int id) const;
-
-  // 前哨站高度映射相关
-  bool height_mapping_determined_ = false;
-  double observed_z_[3];  // 记录每个ID观测到的z坐标
-  int observed_count_[3];  // 记录每个ID的观测次数
-  int height_mapping_[3];  // ID到高度档位的映射 (0:低, 1:中, 2:高)
-  double first_observed_z_;  // 首次观测的z坐标
-  
-  void determine_height_mapping();  // 确定高度映射关系
 };
 
 }  // namespace auto_aim

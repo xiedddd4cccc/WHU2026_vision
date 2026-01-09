@@ -1,8 +1,6 @@
 #include "target.hpp"
 
 #include <numeric>
-#include <algorithm>
-#include <cmath>
 
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
@@ -32,22 +30,6 @@ Target::Target(
   auto center_x = xyz[0] + r * std::cos(ypr[0]);
   auto center_y = xyz[1] + r * std::sin(ypr[0]);
   auto center_z = xyz[2];
-
-  // 前哨站特殊处理：记录首次观测的装甲板高度，用于后续确定高中低对应关系
-  if (name == ArmorName::outpost) {
-    // 初始化高度观测记录
-    for (int i = 0; i < 3; i++) {
-      observed_z_[i] = NAN;  // 标记为未观测
-      observed_count_[i] = 0;
-    }
-    
-    // 记录首次观测的装甲板高度
-    first_observed_z_ = center_z;
-    
-    // 为前哨站初始化时，默认装甲板ID对应关系
-    // 初始假设：id0=中, id1=高, id2=低
-    // 在后续观测中会调整
-  }
 
   // x vx y vy z vz a w r l h
   // a: angle
@@ -117,7 +99,7 @@ void Target::predict(double dt)
     v2 = 0.1;  // 前哨站角加速度方差
   } else {
     v1 = 100;  // 加速度方差
-    v2 = 400;  // 角加速度方差
+    v2 = 350;  // 角加速度方差
   }
   auto a = dt * dt * dt * dt / 4;
   auto b = dt * dt * dt / 2;
@@ -153,6 +135,49 @@ void Target::predict(double dt)
   ekf_.predict(F, Q, f);
 }
 
+//前哨站旋转中心自适应确定
+void Target::update_outpost_height_aware(const Armor & armor, int id)
+{
+  static constexpr double dz_list[3] = {+0.1, 0.0, -0.1};
+
+  double best_cost = 1e9;
+  Armor best_armor = armor;
+
+  for (double dz : dz_list) {
+    Armor armor_try = armor;
+    armor_try.ypd_in_world[2] -= dz;
+
+    // 用完整观测模型预测 ypda
+    Eigen::Vector3d xyz_pred = h_armor_xyz(ekf_.x, id);
+    Eigen::Vector3d ypd_pred = tools::xyz2ypd(xyz_pred);
+    double angle_pred =
+      tools::limit_rad(ekf_.x[6] + id * 2 * CV_PI / armor_num_);
+
+    Eigen::Vector4d z_pred;
+    z_pred << ypd_pred[0], ypd_pred[1], ypd_pred[2], angle_pred;
+
+    Eigen::Vector4d z_meas;
+    z_meas << armor_try.ypd_in_world[0],
+              armor_try.ypd_in_world[1],
+              armor_try.ypd_in_world[2],
+              armor_try.ypr_in_world[0];
+
+    Eigen::Vector4d innov = z_meas - z_pred;
+    innov[0] = tools::limit_rad(innov[0]);
+    innov[1] = tools::limit_rad(innov[1]);
+    innov[3] = tools::limit_rad(innov[3]);
+
+    double cost = innov.squaredNorm();
+
+    if (cost < best_cost) {
+      best_cost = cost;
+      best_armor = armor_try;
+    }
+  }
+
+  // 直接复用原来的 EKF 更新
+  update_ypda(best_armor, id);
+}
 void Target::update(const Armor & armor)
 {
   // 装甲板匹配
@@ -199,36 +224,44 @@ void Target::update(const Armor & armor)
   last_id = id;
   update_count_++;
 
-  update_ypda(armor, id);
+  double curr_yaw = tools::limit_rad(armor.ypr_in_world[0]);
+
+  double yaw_pred_prior = ekf_.x[6];  // 预测步后的 yaw（prior）
+  double yaw_err = std::abs(tools::limit_rad(curr_yaw - yaw_pred_prior));
+
+  bool yaw_obs_valid = (yaw_err < 0.3);  // 角度残差合理
+  bool id_consistent = (has_last_yaw_ && id == last_yaw_id_);
+  bool can_compute_w_meas = yaw_obs_valid && id_consistent;
+
+  if (name == ArmorName::outpost) {
+    update_outpost_height_aware(armor, id);
+  } else {
+    update_ypda(armor, id);
+  }
+  if (can_compute_w_meas) {
+    double dt = tools::delta_time(t_, last_yaw_time_);
+    if (dt > 1e-3 && dt < 0.1) {  // 合理时间间隔
+      double dyaw = tools::limit_rad(curr_yaw - last_yaw_);
+      double w_meas = dyaw / dt;
+
+      // 可选：对 w_meas 做幅值限幅（防极端噪声）
+      if (std::abs(w_meas) <= 10.0) {  // 10 rad/s ≈ 570 deg/s
+        double alpha =
+          0.15 *
+          std::exp(-yaw_err * yaw_err / (2 * 0.3 * 0.3));  //yaw_err 接近阈值时，不是“突然失效”
+        ekf_.x[7] = (1.0 - alpha) * ekf_.x[7] + alpha * w_meas;
+      }
+    }
+  }
+
+  last_yaw_ = curr_yaw;
+  last_yaw_time_ = t_;
+  last_yaw_id_ = id;  // 记录本次用于 yaw 的 ID
+  has_last_yaw_ = true;
 }
 
 void Target::update_ypda(const Armor & armor, int id)
 {
-  // 前哨站特殊处理：记录每个ID的高度观测值，建立高中低映射
-  if (name == ArmorName::outpost) {
-    // 记录当前观测的装甲板高度
-    double current_z = armor.xyz_in_world[2];
-    
-    // 查找最接近的高度档位
-    int height_level = -1;
-    if (std::isnan(observed_z_[0])) {
-      // 首次记录这个ID的高度
-      observed_z_[id] = current_z;
-      observed_count_[id] = 1;
-      
-      // 如果有足够多的观测数据，建立映射关系
-      if (update_count_ >= 3) {  // 至少观测到3个不同的装甲板
-        determine_height_mapping();
-      }
-    } else {
-      // 更新这个ID的高度平均值
-      double old_z = observed_z_[id];
-      int count = observed_count_[id];
-      observed_z_[id] = (old_z * count + current_z) / (count + 1);
-      observed_count_[id] = count + 1;
-    }
-  }
-
   //观测jacobi
   Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
   // Eigen::VectorXd R_dig{{4e-3, 4e-3, 1, 9e-2}};
@@ -311,41 +344,11 @@ Eigen::Vector3d Target::h_armor_xyz(const Eigen::VectorXd & x, int id) const
 {
   auto angle = tools::limit_rad(x[6] + id * 2 * CV_PI / armor_num_);
   auto use_l_h = (armor_num_ == 4) && (id == 1 || id == 3);
-  
-  // 前哨站特殊处理：根据已确定的映射关系设置高度
-  double armor_z = x[4];  // 默认为中档
-  
-  if (name == ArmorName::outpost) {
-    // 如果已经确定了高度映射关系
-    if (height_mapping_determined_) {
-      // 根据ID获取对应的高度偏移
-      double z_offset = 0.0;
-      if (height_mapping_[id] == 0) {        // 低
-        z_offset = -0.1;
-      } else if (height_mapping_[id] == 1) { // 中
-        z_offset = 0.0;
-      } else if (height_mapping_[id] == 2) { // 高
-        z_offset = 0.1;
-      }
-      armor_z = x[4] + z_offset;
-    } else {
-      // 如果尚未确定映射关系，使用初始假设
-      if (id == 0) {
-        armor_z = x[4];  // id0: 中
-      } else if (id == 1) {
-        armor_z = x[4] + 0.1;  // id1: 高
-      } else if (id == 2) {
-        armor_z = x[4] - 0.1;  // id2: 低
-      }
-    }
-  } else {
-    // 其他机器人使用原有的高度计算
-    armor_z = (use_l_h) ? x[4] + x[10] : x[4];
-  }
-  
+
   auto r = (use_l_h) ? x[8] + x[9] : x[8];
   auto armor_x = x[0] - r * std::cos(angle);
   auto armor_y = x[2] - r * std::sin(angle);
+  auto armor_z = (use_l_h) ? x[4] + x[10] : x[4];
 
   return {armor_x, armor_y, armor_z};
 }
@@ -364,11 +367,7 @@ Eigen::MatrixXd Target::h_jacobian(const Eigen::VectorXd & x, int id) const
   auto dx_dl = (use_l_h) ? -std::cos(angle) : 0.0;
   auto dy_dl = (use_l_h) ? -std::sin(angle) : 0.0;
 
-  // 前哨站：高度偏移是固定的，不对h求导
-  auto dz_dh = 0.0;
-  if (name != ArmorName::outpost && use_l_h) {
-    dz_dh = 1.0;
-  }
+  auto dz_dh = (use_l_h) ? 1.0 : 0.0;
 
   // clang-format off
   Eigen::MatrixXd H_armor_xyza{
@@ -394,65 +393,5 @@ Eigen::MatrixXd Target::h_jacobian(const Eigen::VectorXd & x, int id) const
 }
 
 bool Target::checkinit() { return isinit; }
-
-// 新增：确定前哨站高度映射关系
-void Target::determine_height_mapping()
-{
-  if (name != ArmorName::outpost || height_mapping_determined_) {
-    return;
-  }
-  
-  // 检查是否三个ID的高度都已观测到
-  bool all_observed = true;
-  for (int i = 0; i < 3; i++) {
-    if (observed_count_[i] == 0) {
-      all_observed = false;
-      break;
-    }
-  }
-  
-  if (!all_observed) {
-    return;
-  }
-  
-  // 对观测到的z坐标排序
-  std::vector<std::pair<double, int>> z_id_pairs;
-  for (int i = 0; i < 3; i++) {
-    z_id_pairs.push_back({observed_z_[i], i});
-  }
-  
-  // 按高度排序
-  std::sort(z_id_pairs.begin(), z_id_pairs.end());
-  
-  // 分配高度档位
-  // 最低的对应低档(0)，中间的对应中档(1)，最高的对应高档(2)
-  for (int i = 0; i < 3; i++) {
-    height_mapping_[z_id_pairs[i].second] = i;
-  }
-  
-  height_mapping_determined_ = true;
-  
-  // 重新计算中心z坐标
-  double center_z = 0.0;
-  for (int i = 0; i < 3; i++) {
-    if (height_mapping_[i] == 1) {  // 中档
-      center_z = observed_z_[i];
-      break;
-    }
-  }
-  
-  // 更新EKF状态中的中心z坐标
-  ekf_.x[4] = center_z;
-  
-  tools::logger()->info("[Target] Outpost height mapping determined:");
-  for (int i = 0; i < 3; i++) {
-    const char* level_str = "";
-    if (height_mapping_[i] == 0) level_str = "低";
-    else if (height_mapping_[i] == 1) level_str = "中";
-    else if (height_mapping_[i] == 2) level_str = "高";
-    tools::logger()->info("  ID {} -> {} (z={:.3f})", i, level_str, observed_z_[i]);
-  }
-  tools::logger()->info("  Center z = {:.3f}", center_z);
-}
 
 }  // namespace auto_aim

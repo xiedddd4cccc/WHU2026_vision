@@ -69,7 +69,7 @@ int main(int argc, char * argv[])
     while (!quit) {
       auto target = target_queue.front();
       auto gs = gimbal.state();
-      auto plan = planner.plan(target, 12.0);
+      auto plan = planner.plan(target, 14.5);
 
       gimbal.send(
         plan.control, plan.fire, plan.yaw, plan.yaw_vel, plan.yaw_acc, plan.pitch, plan.pitch_vel,
@@ -173,8 +173,7 @@ int main(int argc, char * argv[])
         // 在图像上显示帧率
         std::string fps_text = fmt::format("FPS: {:.2f}", fps);
         cv::putText(img, fps_text, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 255, 0), 2);
-
-        cv::resize(img, img, {}, 0.5, 0.5);  // 显示时缩小图片尺寸
+        cv::resize(img, img, {}, 0.5, 0.5);
         cv::imshow("reprojection", img);
         auto key = cv::waitKey(1);
         if (key == 'q') break; 

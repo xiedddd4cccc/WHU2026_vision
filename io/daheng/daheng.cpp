@@ -105,7 +105,6 @@ void DaHeng::onFrameCallback(GX_FRAME_CALLBACK_PARAM* pFrame)
             cv::LUT(bgr, cv_lut, bgr);
         }
     }
-
     data.img = std::move(bgr);
     data.timestamp = std::chrono::steady_clock::now();
 
@@ -161,7 +160,7 @@ DaHeng::DaHeng(double exposure_ms, double gain, const std::string& vid_pid)
     GXSetFloat(handle_, GX_FLOAT_EXPOSURE_TIME, exposure_us_);
     GXSetEnum(handle_, GX_ENUM_GAIN_AUTO, GX_GAIN_AUTO_OFF);
     GXSetFloat(handle_, GX_FLOAT_GAIN, gain_);
-    GXSetEnum(handle_, GX_ENUM_BALANCE_WHITE_AUTO, GX_BALANCE_WHITE_AUTO_OFF);
+    GXSetEnum(handle_, GX_ENUM_BALANCE_WHITE_AUTO, GX_BALANCE_WHITE_AUTO_CONTINUOUS);
     GXSetEnum(handle_, GX_ENUM_BLACKLEVEL_AUTO, GX_BLACKLEVEL_AUTO_OFF);
     GXSetEnum(handle_, GX_ENUM_ACQUISITION_FRAME_RATE_MODE, GX_ACQUISITION_FRAME_RATE_MODE_OFF);
 
