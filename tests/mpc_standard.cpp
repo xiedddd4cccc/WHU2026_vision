@@ -69,7 +69,7 @@ int main(int argc, char * argv[])
     while (!quit) {
       auto target = target_queue.front();
       auto gs = gimbal.state();
-      auto plan = planner.plan(target, 14.5);
+      auto plan = planner.plan(target, 13.4);
 
       gimbal.send(
         plan.control, plan.fire, plan.yaw, plan.yaw_vel, plan.yaw_acc, plan.pitch, plan.pitch_vel,
