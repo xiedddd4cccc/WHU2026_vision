@@ -1,21 +1,23 @@
-#ifndef TOOLS__TRAJECTORY_HPP
-#define TOOLS__TRAJECTORY_HPP
+#pragma once
 
 namespace tools
 {
-struct Trajectory
-{
-  bool unsolvable;
-  double fly_time;
-  double pitch;  // 抬头为正
 
-  // 不考虑空气阻力
-  // v0 子弹初速度大小，单位：m/s
-  // d 目标水平距离，单位：m
-  // h 目标竖直高度，单位：m
-  Trajectory(const double v0, const double d, const double h);
+class Trajectory
+{
+public:
+  Trajectory(double v0, double d, double h);
+
+  bool unsolvable = false;
+  double pitch = 0.0;     // rad
+  double fly_time = 0.0;  // s
+
+private:
+  double simulate(double pitch, double & fly_time) const;
+
+  double v0_;
+  double d_;
+  double h_;
 };
 
 }  // namespace tools
-
-#endif  // TOOLS__TRAJECTORY_HPP

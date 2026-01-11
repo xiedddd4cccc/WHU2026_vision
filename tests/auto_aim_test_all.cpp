@@ -59,7 +59,9 @@ int main(int argc, char * argv[])
     // -------------------- 云台姿态 --------------------
     Eigen::Quaterniond gimbal_q = gimbal.q(frame_start);
     solver.set_R_gimbal2world(gimbal_q);
-
+    Eigen::Vector3d ypr = tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0);
+    Eigen::Vector2d current_ypr = ypr.head<2>();
+    
     // -------------------- 自瞄主流程 --------------------
     auto armors = yolo.detect(img, 0);
     auto targets = tracker.track(armors, frame_start);
@@ -81,7 +83,7 @@ int main(int argc, char * argv[])
       tools::logger()->info("FPS: {:.1f}, Tracker State: {}", fps, tracker.state());
     }
 
-    // -------------------- 可视化 --------------------
+    // -------------------- 基础文字信息 --------------------
     Eigen::Vector3d euler = tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0) * 57.3;
 
     std::string tracker_state = tracker.state();
@@ -96,47 +98,57 @@ int main(int argc, char * argv[])
       state_color = {0, 0, 255};
 
     tools::draw_text(img, fmt::format("State: {}", tracker_state), {10, 30}, state_color);
-
     tools::draw_text(
       img, fmt::format("Gimbal yaw:{:.2f}, pitch:{:.2f}", euler[0], euler[1]), {10, 60},
       {255, 255, 255});
-
     tools::draw_text(
       img, fmt::format("Cmd yaw:{:.2f}, pitch:{:.2f}", command.yaw * 57.3, command.pitch * 57.3),
       {10, 90}, {154, 50, 205});
-    // -------------------- 是否开火显示 --------------------
+
     if (command.shoot) {
-      tools::draw_text(
-        img,
-        "FIRE",
-        {10, 120},
-        cv::Scalar(0, 0, 255),   // 红色
-        1.2                      // 字体放大一点
-      );
+      tools::draw_text(img, "FIRE", {10, 120}, cv::Scalar(0, 0, 255), 1.2);
     } else {
-      tools::draw_text(
-        img,
-        "HOLD",
-        {10, 120},
-        cv::Scalar(200, 200, 200)
-      );
+      tools::draw_text(img, "HOLD", {10, 120}, cv::Scalar(200, 200, 200));
     }
-    // -------------------- 重投影装甲板绘制 --------------------
-    if (!targets.empty() && aimer.debug_aim_point.valid) {
-      const auto & aim_point = aimer.debug_aim_point;
 
-      Eigen::Vector4d aim_xyza;
-      for (int i = 0; i < 4; ++i) {
-        aim_xyza[i] = static_cast<double>(aim_point.xyza[i]);
+    // ==================== 【关键修改：可视化】====================
+
+    // 1. 绘制所有装甲板位置（绿色）
+    for (const auto & target : targets) {
+      std::vector<Eigen::Vector4d> armor_xyza_list = target.armor_xyza_list();
+      for (const Eigen::Vector4d & xyza : armor_xyza_list) {
+        auto image_points = solver.reproject_armor(xyza.head<3>(), xyza[3], target.armor_type, target.name);
+        tools::draw_points(img, image_points, {0, 255, 0});
       }
-
-      const auto & target = targets.front();
-
-      auto image_points =
-        solver.reproject_armor(aim_xyza.head<3>(), aim_xyza[3], target.armor_type, target.name);
-
-      tools::draw_points(img, image_points, cv::Scalar(0, 0, 255));
     }
+
+    // 2. 绘制瞄准点（单个红点）
+    if (!targets.empty() && aimer.debug_aim_point.valid) {
+      Eigen::Vector3d aim_xyz(
+        aimer.debug_aim_point.xyza[0],
+        aimer.debug_aim_point.xyza[1],
+        aimer.debug_aim_point.xyza[2]
+      );
+
+      // 转为 OpenCV 点格式
+      std::vector<cv::Point3f> world_pts = {
+        cv::Point3f(static_cast<float>(aim_xyz.x()),
+                    static_cast<float>(aim_xyz.y()),
+                    static_cast<float>(aim_xyz.z()))
+      };
+
+      // 投影到图像平面
+      auto pixel_pts = solver.world2pixel(world_pts);
+
+      if (!pixel_pts.empty()) {
+        cv::Point2f pt = pixel_pts[0];
+        // 实心红圆 + 白边（更醒目）
+        cv::circle(img, pt, 5, cv::Scalar(0, 0, 255), -1);      // 红色填充
+        cv::circle(img, pt, 6, cv::Scalar(255, 255, 255), 1);   // 白色轮廓
+      }
+    }
+
+    // ==================== 【End 可视化】====================
 
     // -------------------- Plotter --------------------
     nlohmann::json data;

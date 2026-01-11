@@ -156,33 +156,175 @@ AimPoint Aimer::choose_aim_point(const Target & target)
   if (armors.empty()) {
     return {false, false, Eigen::Vector4d::Zero()};
   }
-  // 平动目标：直接选第一个（或最近的）
-  int best_id = 0;
-  double min_d2 = 1e9;
-  for (size_t i = 0; i < armors.size(); ++i) {
-    double d2 = armors[i][0] * armors[i][0] + armors[i][1] * armors[i][1];
-    if (d2 < min_d2) {
-      min_d2 = d2;
-      best_id = i;
+
+  const auto ekf_x = target.ekf_x();
+  const int armor_num = armors.size();
+
+  // ===== 1. 若未发生跳变，直接用第一个 =====
+  if (!target.jumped) {
+    return {true, false, armors[0]};
+  }
+
+  // ===== 2. 计算中心 yaw =====
+  double center_yaw = std::atan2(ekf_x[2], ekf_x[0]);
+
+  // ===== 3. 找 yaw 最近的两个装甲板 =====
+  int first_id = -1, second_id = -1;
+  double min1 = 1e9, min2 = 1e9;
+
+  for (int i = 0; i < armor_num; ++i) {
+    double delta = std::abs(tools::limit_rad(armors[i][3] - center_yaw));
+    if (delta < min1) {
+      min2 = min1; second_id = first_id;
+      min1 = delta; first_id = i;
+    } else if (delta < min2) {
+      min2 = delta; second_id = i;
     }
   }
-  return {true, false, armors[best_id]};  // fire = false
+
+  // ===== 4. 找距离最近的两个 =====
+  int dmin_first = -1, dmin_second = -1;
+  double dmin1 = 1e9, dmin2 = 1e9;
+
+  for (int i = 0; i < armor_num; ++i) {
+    double d2 = armors[i][0]*armors[i][0] + armors[i][1]*armors[i][1];
+    if (d2 < dmin1) {
+      dmin2 = dmin1; dmin_second = dmin_first;
+      dmin1 = d2; dmin_first = i;
+    } else if (d2 < dmin2) {
+      dmin2 = d2; dmin_second = i;
+    }
+  }
+
+  // ===== 5. yaw 与距离一致性筛选 =====
+  auto valid = [&](int id) {
+    return id == dmin_first || id == dmin_second;
+  };
+
+  if (!valid(first_id)) return {true, false, armors[second_id]};
+  if (!valid(second_id)) return {true, false, armors[first_id]};
+
+  // ===== 6. 大角度直接排除 =====
+  double yaw1 = std::atan2(armors[first_id][1], armors[first_id][0]);
+  double yaw2 = std::atan2(armors[second_id][1], armors[second_id][0]);
+
+  if (std::abs(tools::limit_rad(armors[first_id][3] - yaw1)) > comming_angle_) {
+    return {true, false, armors[second_id]};
+  }
+
+  if (std::abs(tools::limit_rad(armors[second_id][3] - yaw2)) > comming_angle_) {
+    return {true, false, armors[first_id]};
+  }
+
+  // ===== 7. 锁定逻辑（防抖）=====
+  if (lock_id_ != first_id && lock_id_ != second_id) {
+    lock_id_ =
+      (std::abs(armors[first_id][3] - yaw1) <
+       std::abs(armors[second_id][3] - yaw2))
+        ? first_id : second_id;
+  }
+
+  return {true, false, armors[lock_id_]};
 }
 Eigen::Vector3d Aimer::get_outpost_front(const Target & target)
 {
-  auto ekf_x = target.ekf_x();
-  Eigen::Vector3d center = {ekf_x[0], ekf_x[2], ekf_x[4]};
-  Eigen::Vector2d center_xy = center.head(2);
+  const auto ekf_x = target.ekf_x();
 
-  // ekf_x[8] 假设为旋转半径 r
-  double r = ekf_x.size() > 8 ? ekf_x[8] : 0.15;  // 默认半径 15cm，防越界
+  // ==================== 1. 旋转中心 ====================
+  Eigen::Vector3d center(ekf_x[0], ekf_x[2], ekf_x[4]);
+  Eigen::Vector2d center_xy = center.head<2>();
+
   double d_center = center_xy.norm();
-  if (d_center < 1e-3) return center;  // 防除零
+  if (d_center < 1e-3) {
+    return center;
+  }
 
-  double horizonal_distance = d_center - r;
-  Eigen::Vector2d hit_point_xy = (horizonal_distance / d_center) * center_xy;
-  return {hit_point_xy[0], hit_point_xy[1], ekf_x[4]};
+  // ==================== 2. 前沿 XY（与 get_top_front 一致） ====================
+  double r = (ekf_x.size() > 8) ? ekf_x[8] : 0.15;  // 默认半径 15 cm
+  double horizontal_distance = d_center - r;
+  Eigen::Vector2d hit_xy = (horizontal_distance / d_center) * center_xy;
+
+  // ==================== 3. 装甲板集合 ====================
+  const auto armors = target.armor_xyza_list();
+  if (armors.empty()) {
+    return {hit_xy[0], hit_xy[1], ekf_x[4]};
+  }
+
+  // ==================== 4. 三档高度先验 ====================
+  constexpr double dz = 0.1;
+  const double z_center = ekf_x[4];
+  const std::array<double, 3> z_levels = {
+    z_center - dz,
+    z_center,
+    z_center + dz
+  };
+
+  // ==================== 5. 若几乎不转：选最近装甲板高度并吸附 ====================
+  double w = ekf_x[7];
+  if (std::abs(w) < 1e-3) {
+    int best_id = 0;
+    double min_d2 = 1e9;
+    for (size_t i = 0; i < armors.size(); ++i) {
+      double d2 = armors[i][0]*armors[i][0] + armors[i][1]*armors[i][1];
+      if (d2 < min_d2) {
+        min_d2 = d2;
+        best_id = i;
+      }
+    }
+
+    // 高度吸附
+    double z_obs = armors[best_id][2];
+    double best_z = z_levels[0];
+    double min_err = std::abs(z_obs - best_z);
+    for (double z : z_levels) {
+      double err = std::abs(z_obs - z);
+      if (err < min_err) {
+        min_err = err;
+        best_z = z;
+      }
+    }
+
+    return {hit_xy[0], hit_xy[1], best_z};
+  }
+
+  // ==================== 6. 旋转：选“最先转到正面”的装甲板 ====================
+  double center_yaw = std::atan2(ekf_x[2], ekf_x[0]);
+
+  int best_id = 0;
+  double min_dt = 1e9;
+
+  for (size_t i = 0; i < armors.size(); ++i) {
+    double armor_yaw = armors[i][3];
+    double delta_yaw = tools::limit_rad(armor_yaw - center_yaw);
+
+    double dt;
+    if (w > 0) {
+      dt = (delta_yaw <= 0) ? -delta_yaw / w : (2 * M_PI - delta_yaw) / w;
+    } else {
+      dt = (delta_yaw >= 0) ? delta_yaw / (-w) : (2 * M_PI + delta_yaw) / (-w);
+    }
+
+    if (dt < min_dt) {
+      min_dt = dt;
+      best_id = i;
+    }
+  }
+
+  // ==================== 7. 高度吸附到三档 ====================
+  double z_obs = armors[best_id][2];
+  double best_z = z_levels[0];
+  double min_err = std::abs(z_obs - best_z);
+  for (double z : z_levels) {
+    double err = std::abs(z_obs - z);
+    if (err < min_err) {
+      min_err = err;
+      best_z = z;
+    }
+  }
+
+  return {hit_xy[0], hit_xy[1], best_z};
 }
+
 
 Eigen::Vector3d Aimer::get_top_front(const Target & target)
 {

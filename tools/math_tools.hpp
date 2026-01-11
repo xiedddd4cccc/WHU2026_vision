@@ -53,6 +53,8 @@ T square(T const & a)
 };
 
 double limit_min_max(double input, double min, double max);
+std::chrono::steady_clock::time_point add_time(
+  const std::chrono::steady_clock::time_point & t0, const double & dt);
 }  // namespace tools
 
 #endif  // TOOLS__MATH_TOOLS_HPP
