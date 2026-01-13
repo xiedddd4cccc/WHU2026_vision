@@ -29,8 +29,11 @@ Aimer::Aimer(const std::string & config_path)
 }
 
 io::Command auto_aim::Aimer::aim(
-  std::list<auto_aim::Target> targets, std::chrono::steady_clock::time_point timestamp,
-  double bullet_speed, bool to_now)
+  std::list<auto_aim::Target> targets, 
+  std::chrono::steady_clock::time_point timestamp,
+  double bullet_speed, 
+  bool to_now,
+  Eigen::Vector3d ypr)  // ← 新增参数：当前云台姿态（yaw, pitch, roll）
 {
   if (targets.empty()) {
     return {false, false, 0.0, 0.0};
@@ -62,7 +65,7 @@ io::Command auto_aim::Aimer::aim(
   predicted_target.predict(t_fire);
 
   Eigen::Vector3d aim_xyz;
-  bool should_shoot = false;
+  bool should_shoot_based_on_rotation = false;  // 旋转窗口内可打
   bool valid = true;
 
   const double w = predicted_target.ekf_x()[7];  // 角速度
@@ -88,7 +91,7 @@ io::Command auto_aim::Aimer::aim(
       for (const auto & armor : hit_target.armor_xyza_list()) {
         double delta = tools::limit_rad(center_yaw - armor[3]);  // center - armor_yaw
         if (delta >= 0 && delta <= fire_error) {
-          should_shoot = true;
+          should_shoot_based_on_rotation = true;
           break;
         }
       }
@@ -115,7 +118,7 @@ io::Command auto_aim::Aimer::aim(
       for (const auto & armor : hit_target.armor_xyza_list()) {
         double delta = tools::limit_rad(center_yaw - armor[3]);
         if ((sig * delta) >= 0 && (sig * delta) <= fire_error) {
-          should_shoot = true;
+          should_shoot_based_on_rotation = true;
           break;
         }
       }
@@ -123,13 +126,56 @@ io::Command auto_aim::Aimer::aim(
 
   } else {
     // ==================== 平动目标 ====================
-    auto aim_point = choose_aim_point(predicted_target);
-    if (!aim_point.valid) {
-      return {false, false, 0.0, 0.0};
+// 第一次预测：发射时刻
+    auto target0 = predicted_target; // t_fire 时刻
+    auto aim_point0 = choose_aim_point(target0);
+    if (!aim_point0.valid) {
+        return {false, false, 0.0, 0.0};
     }
-    aim_xyz = aim_point.xyza.head(3);
-    // 平动目标通常不开火（由上层控制），或可加对准判断
-    should_shoot = false;
+    Eigen::Vector3d xyz0 = aim_point0.xyza.head(3);
+    double d0 = std::sqrt(xyz0.x() * xyz0.x() + xyz0.y() * xyz0.y());
+    tools::Trajectory traj0(bullet_speed, d0, xyz0.z()); 
+    if (traj0.unsolvable) {
+        return {false, false, 0.0, 0.0};
+    }
+
+    // 第二次预测：命中时刻
+    auto t_hit = t_fire + std::chrono::microseconds(static_cast<int64_t>(traj0.fly_time * 1e6));
+    auto target1 = target;
+    target1.predict(t_hit);
+    auto aim_point1 = choose_aim_point(target1);
+    if (!aim_point1.valid) {
+        return {false, false, 0.0, 0.0};
+    }
+    Eigen::Vector3d xyz1 = aim_point1.xyza.head(3);
+    double d1 = std::sqrt(xyz1.x() * xyz1.x() + xyz1.y() * xyz1.y());
+    tools::Trajectory traj1(bullet_speed, d1, xyz1.z());
+    if (traj1.unsolvable) {
+        return {false, false, 0.0, 0.0};
+    }
+
+    // 一致性检查（可选，但推荐）
+    if (std::abs(traj1.fly_time - traj0.fly_time) > 0.1) {
+        // 可打日志，但不直接返回，继续用 traj1
+        tools::logger()->debug("[Aimer] Large time error in flat target: {:.3f}", 
+                               traj1.fly_time - traj0.fly_time);
+    }
+
+    // 使用第二次结果作为最终瞄准点
+    double yaw = std::atan2(xyz1.y(), xyz1.x()) + yaw_offset_;
+    double pitch = -(traj1.pitch + pitch_offset_); // 注意符号！
+
+    // 判断云台是否对准 → 决定是否开火
+    bool is_gimbal_aligned = 
+        (std::abs(tools::limit_rad(ypr[0] - yaw)) < max_fire_error_yaw_) &&
+        (std::abs(ypr[1] - pitch) < max_fire_error_pitch_);
+
+    debug_aim_point = aim_point1;
+
+    // 平动目标：只要对准就开火（不像旋转目标需等窗口）
+    bool should_shoot = is_gimbal_aligned;
+
+    return {true, should_shoot, yaw, pitch};
   }
 
   // 弹道解算（再次，因为 aim_xyz 已确定）
@@ -143,89 +189,107 @@ io::Command auto_aim::Aimer::aim(
 
   // 最终角度
   double yaw = std::atan2(aim_xyz.y(), aim_xyz.x()) + yaw_offset_;
-  double pitch = -(traj.pitch + pitch_offset_);
+  double pitch = -(traj.pitch + pitch_offset_);  // 注意方向（假设 pitch 向下为正）
+
+  // ====== 新增：根据云台当前状态判断是否真正开火 ======
+  bool is_gimbal_aligned = 
+    (std::abs(tools::limit_rad(ypr[0] - yaw)) < max_fire_error_yaw_) &&
+    (std::abs(ypr[1] - pitch) < max_fire_error_pitch_);
+
+  bool should_shoot = should_shoot_based_on_rotation && is_gimbal_aligned;
 
   debug_aim_point = {
     true, should_shoot, Eigen::Vector4d(aim_xyz.x(), aim_xyz.y(), aim_xyz.z(), 0.0)};
 
   return {true, should_shoot, yaw, pitch};
 }
+
 AimPoint Aimer::choose_aim_point(const Target & target)
 {
-  auto armors = target.armor_xyza_list();
-  if (armors.empty()) {
+  const auto & armors = target.armor_xyza_list();
+  const int armor_num = armors.size();
+
+  if (armor_num == 0) {
     return {false, false, Eigen::Vector4d::Zero()};
   }
 
-  const auto ekf_x = target.ekf_x();
-  const int armor_num = armors.size();
-
-  // ===== 1. 若未发生跳变，直接用第一个 =====
+  // ===== 1. 未发生跳变，直接用当前装甲板 =====
   if (!target.jumped) {
     return {true, false, armors[0]};
   }
 
-  // ===== 2. 计算中心 yaw =====
-  double center_yaw = std::atan2(ekf_x[2], ekf_x[0]);
+  const auto ekf_x = target.ekf_x();
 
-  // ===== 3. 找 yaw 最近的两个装甲板 =====
+  // ===== 2. 整车旋转中心 yaw（与 Shooter 完全一致）=====
+  const double center_yaw = std::atan2(ekf_x[2], ekf_x[0]);
+
+  // ===== 3. 找 yaw 最接近 center_yaw 的两个装甲板 =====
   int first_id = -1, second_id = -1;
   double min1 = 1e9, min2 = 1e9;
 
   for (int i = 0; i < armor_num; ++i) {
-    double delta = std::abs(tools::limit_rad(armors[i][3] - center_yaw));
+    double delta = std::abs(
+      tools::limit_rad(armors[i][3] - center_yaw));
+
     if (delta < min1) {
-      min2 = min1; second_id = first_id;
-      min1 = delta; first_id = i;
+      min2 = min1;
+      second_id = first_id;
+      min1 = delta;
+      first_id = i;
     } else if (delta < min2) {
-      min2 = delta; second_id = i;
+      min2 = delta;
+      second_id = i;
     }
   }
 
-  // ===== 4. 找距离最近的两个 =====
+  // ===== 4. 找平面距离最近的两个装甲板 =====
   int dmin_first = -1, dmin_second = -1;
   double dmin1 = 1e9, dmin2 = 1e9;
 
   for (int i = 0; i < armor_num; ++i) {
-    double d2 = armors[i][0]*armors[i][0] + armors[i][1]*armors[i][1];
+    double d2 = armors[i][0] * armors[i][0] +
+                armors[i][1] * armors[i][1];
+
     if (d2 < dmin1) {
-      dmin2 = dmin1; dmin_second = dmin_first;
-      dmin1 = d2; dmin_first = i;
+      dmin2 = dmin1;
+      dmin_second = dmin_first;
+      dmin1 = d2;
+      dmin_first = i;
     } else if (d2 < dmin2) {
-      dmin2 = d2; dmin_second = i;
+      dmin2 = d2;
+      dmin_second = i;
     }
   }
 
-  // ===== 5. yaw 与距离一致性筛选 =====
-  auto valid = [&](int id) {
+  // ===== 5. yaw / 距离一致性筛选（与 Shooter 行为一致）=====
+  auto is_nearest = [&](int id) {
     return id == dmin_first || id == dmin_second;
   };
 
-  if (!valid(first_id)) return {true, false, armors[second_id]};
-  if (!valid(second_id)) return {true, false, armors[first_id]};
-
-  // ===== 6. 大角度直接排除 =====
-  double yaw1 = std::atan2(armors[first_id][1], armors[first_id][0]);
-  double yaw2 = std::atan2(armors[second_id][1], armors[second_id][0]);
-
-  if (std::abs(tools::limit_rad(armors[first_id][3] - yaw1)) > comming_angle_) {
+  if (!is_nearest(first_id)) {
     return {true, false, armors[second_id]};
   }
 
-  if (std::abs(tools::limit_rad(armors[second_id][3] - yaw2)) > comming_angle_) {
+  if (!is_nearest(second_id)) {
     return {true, false, armors[first_id]};
   }
 
-  // ===== 7. 锁定逻辑（防抖）=====
+  // ===== 6. 锁定逻辑（防止两个侧对装甲板来回跳）=====
+  const double yaw1 = std::atan2(armors[first_id][1], armors[first_id][0]);
+  const double yaw2 = std::atan2(armors[second_id][1], armors[second_id][0]);
+
   if (lock_id_ != first_id && lock_id_ != second_id) {
-    lock_id_ =
-      (std::abs(armors[first_id][3] - yaw1) <
-       std::abs(armors[second_id][3] - yaw2))
-        ? first_id : second_id;
+    const double err1 =
+      std::abs(tools::limit_rad(armors[first_id][3] - yaw1));
+    const double err2 =
+      std::abs(tools::limit_rad(armors[second_id][3] - yaw2));
+
+    lock_id_ = (err1 < err2) ? first_id : second_id;
   }
 
   return {true, false, armors[lock_id_]};
 }
+
 Eigen::Vector3d Aimer::get_outpost_front(const Target & target)
 {
   const auto ekf_x = target.ekf_x();

@@ -224,40 +224,11 @@ void Target::update(const Armor & armor)
   last_id = id;
   update_count_++;
 
-  double curr_yaw = tools::limit_rad(armor.ypr_in_world[0]);
-
-  double yaw_pred_prior = ekf_.x[6];  // 预测步后的 yaw（prior）
-  double yaw_err = std::abs(tools::limit_rad(curr_yaw - yaw_pred_prior));
-
-  bool yaw_obs_valid = (yaw_err < 0.3);  // 角度残差合理
-  bool id_consistent = (has_last_yaw_ && id == last_yaw_id_);
-  bool can_compute_w_meas = yaw_obs_valid && id_consistent;
-
   if (name == ArmorName::outpost) {
     update_outpost_height_aware(armor, id);
   } else {
     update_ypda(armor, id);
   }
-  if (can_compute_w_meas) {
-    double dt = tools::delta_time(t_, last_yaw_time_);
-    if (dt > 1e-3 && dt < 0.1) {  // 合理时间间隔
-      double dyaw = tools::limit_rad(curr_yaw - last_yaw_);
-      double w_meas = dyaw / dt;
-
-      // 可选：对 w_meas 做幅值限幅（防极端噪声）
-      if (std::abs(w_meas) <= 10.0) {  // 10 rad/s ≈ 570 deg/s
-        double alpha =
-          0.15 *
-          std::exp(-yaw_err * yaw_err / (2 * 0.3 * 0.3));  //yaw_err 接近阈值时，不是“突然失效”
-        ekf_.x[7] = (1.0 - alpha) * ekf_.x[7] + alpha * w_meas;
-      }
-    }
-  }
-
-  last_yaw_ = curr_yaw;
-  last_yaw_time_ = t_;
-  last_yaw_id_ = id;  // 记录本次用于 yaw 的 ID
-  has_last_yaw_ = true;
 }
 
 void Target::update_ypda(const Armor & armor, int id)

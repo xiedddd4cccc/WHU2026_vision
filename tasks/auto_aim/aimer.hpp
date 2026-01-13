@@ -29,7 +29,9 @@ io::Command aim(
     std::list<Target> targets,
     std::chrono::steady_clock::time_point timestamp,
     double bullet_speed,
-    bool to_now = true);
+    bool to_now ,
+    Eigen::Vector3d ypr
+  );
 
   private : double yaw_offset_;
   std::optional<double> left_yaw_offset_, right_yaw_offset_;
@@ -40,6 +42,8 @@ io::Command aim(
   double high_speed_delay_time_;
   double low_speed_delay_time_;
   double decision_speed_;
+  double max_fire_error_yaw_=0.2;
+  double max_fire_error_pitch_=0.1;
 
   AimPoint choose_aim_point(const Target & target);
       Eigen::Vector3d get_outpost_front(const Target& target);

@@ -60,12 +60,11 @@ int main(int argc, char * argv[])
     Eigen::Quaterniond gimbal_q = gimbal.q(frame_start);
     solver.set_R_gimbal2world(gimbal_q);
     Eigen::Vector3d ypr = tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0);
-    Eigen::Vector2d current_ypr = ypr.head<2>();
     
     // -------------------- 自瞄主流程 --------------------
     auto armors = yolo.detect(img, 0);
     auto targets = tracker.track(armors, frame_start);
-    auto command = aimer.aim(targets, frame_start, 13, false);
+    auto command = aimer.aim(targets, frame_start, 13, true,ypr);
 
     // -------------------- 串口发送 --------------------
     gimbal.send(command.control, command.shoot, command.yaw, 0, 0, command.pitch, 0, 0);
@@ -113,16 +112,49 @@ int main(int argc, char * argv[])
 
     // ==================== 【关键修改：可视化】====================
 
-    // 1. 绘制所有装甲板位置（绿色）
-    for (const auto & target : targets) {
-      std::vector<Eigen::Vector4d> armor_xyza_list = target.armor_xyza_list();
-      for (const Eigen::Vector4d & xyza : armor_xyza_list) {
-        auto image_points = solver.reproject_armor(xyza.head<3>(), xyza[3], target.armor_type, target.name);
-        tools::draw_points(img, image_points, {0, 255, 0});
-      }
-    }
+   for (const auto & target : targets) {
+  const auto & armor_xyza_list = target.armor_xyza_list();
 
-    // 2. 绘制瞄准点（单个红点）
+  for (size_t i = 0; i < armor_xyza_list.size(); ++i) {
+    const Eigen::Vector4d & xyza = armor_xyza_list[i];
+
+    // 1. 画装甲板（绿色）
+    auto image_points = solver.reproject_armor(
+      xyza.head<3>(),
+      xyza[3],
+      target.armor_type,
+      target.name
+    );
+    tools::draw_points(img, image_points, {0, 255, 0});
+
+    // 2. 装甲板中心 → 像素坐标
+    std::vector<cv::Point3f> world_pts = {
+      cv::Point3f(
+        static_cast<float>(xyza[0]),
+        static_cast<float>(xyza[1]),
+        static_cast<float>(xyza[2])
+      )
+    };
+
+    auto pixel_pts = solver.world2pixel(world_pts);
+    if (pixel_pts.empty()) continue;
+
+    cv::Point2f center_pt = pixel_pts[0];
+
+    // 3. 画 id（红字）
+    cv::putText(
+      img,
+      fmt::format("id={}", i),
+      center_pt + cv::Point2f(5, -5),
+      cv::FONT_HERSHEY_SIMPLEX,
+      0.6,
+      cv::Scalar(0, 0, 255),
+      2
+    );
+  }
+}
+
+    //  绘制瞄准点
     if (!targets.empty() && aimer.debug_aim_point.valid) {
       Eigen::Vector3d aim_xyz(
         aimer.debug_aim_point.xyza[0],
@@ -130,7 +162,6 @@ int main(int argc, char * argv[])
         aimer.debug_aim_point.xyza[2]
       );
 
-      // 转为 OpenCV 点格式
       std::vector<cv::Point3f> world_pts = {
         cv::Point3f(static_cast<float>(aim_xyz.x()),
                     static_cast<float>(aim_xyz.y()),

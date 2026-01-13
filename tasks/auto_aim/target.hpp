@@ -23,11 +23,6 @@ public:
   bool jumped;
   int last_id;  // debug only
 
-  // yaw 差分用
-  bool has_last_yaw_ = false;
-  double last_yaw_ = 0.0;
-  std::chrono::steady_clock::time_point last_yaw_time_;
-  int last_yaw_id_ = -1;
 
   Target() = default;
   Target(
