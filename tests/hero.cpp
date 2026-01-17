@@ -15,10 +15,12 @@
 #include "tools/logger.hpp"
 #include "tools/math_tools.hpp"
 #include "tools/plotter.hpp"
-
+using namespace std::chrono_literals;
+// ==================== 命令行参数 ====================
 const std::string keys =
   "{help h usage ? |                   | 输出命令行参数说明 }"
-  "{@config-path   | configs/demo.yaml | yaml配置文件路径}";
+  "{@config-path   | configs/demo.yaml | yaml配置文件路径}"
+  "{no-vis         | false             | 关闭所有可视化（draw / plot / imshow）}";
 
 int main(int argc, char * argv[])
 {
@@ -28,7 +30,9 @@ int main(int argc, char * argv[])
     cli.printMessage();
     return 0;
   }
+
   auto config_path = cli.get<std::string>(0);
+  bool enable_vis = !cli.get<bool>("no-vis");
 
   tools::Plotter plotter;
   tools::Exiter exiter;
@@ -49,7 +53,7 @@ int main(int argc, char * argv[])
   int frame_count = 0;
   constexpr double fps_update_interval = 1.0;
 
-  // -------------------- 主循环 --------------------
+  // ==================== 主循环 ====================
   while (!exiter.exit()) {
     auto frame_start = std::chrono::steady_clock::now();
 
@@ -57,17 +61,26 @@ int main(int argc, char * argv[])
     if (img.empty()) break;
 
     // -------------------- 云台姿态 --------------------
-    Eigen::Quaterniond gimbal_q = gimbal.q(frame_start);
+    constexpr auto IMU_DELAY = 2ms;
+    Eigen::Quaterniond gimbal_q = gimbal.q(frame_start-IMU_DELAY);
     solver.set_R_gimbal2world(gimbal_q);
-    Eigen::Vector3d ypr = tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0);
-    
+    Eigen::Vector3d ypr =
+      tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0);
+
     // -------------------- 自瞄主流程 --------------------
     auto armors = yolo.detect(img, 0);
     auto targets = tracker.track(armors, frame_start);
-    auto command = aimer.aim(targets, frame_start, 13, true,ypr);
+    auto command = aimer.aim(targets, frame_start, 13.3, true, ypr);
 
     // -------------------- 串口发送 --------------------
-    gimbal.send(command.control, command.shoot, command.yaw, 0, 0, command.pitch, 0, 0);
+    gimbal.send(
+      command.control,
+      command.shoot,
+      command.yaw,
+      0, 0,
+      command.pitch,
+      0, 0
+    );
 
     // -------------------- FPS 计算 --------------------
     frame_count++;
@@ -79,124 +92,125 @@ int main(int argc, char * argv[])
       frame_count = 0;
       last_fps_time = now;
 
-      tools::logger()->info("FPS: {:.1f}, Tracker State: {}", fps, tracker.state());
+      tools::logger()->info(
+        "FPS: {:.1f}, Tracker State: {}",
+        fps,
+        tracker.state()
+      );
     }
 
-    // -------------------- 基础文字信息 --------------------
-    Eigen::Vector3d euler = tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0) * 57.3;
+    // ==================== 可视化（统一开关） ====================
+    if (enable_vis) {
+      // -------- 基础状态 --------
+      Eigen::Vector3d euler =
+        tools::eulers(gimbal_q.toRotationMatrix(), 2, 1, 0) * 57.3;
 
-    std::string tracker_state = tracker.state();
-    cv::Scalar state_color;
-    if (tracker_state == "tracking")
-      state_color = {0, 255, 0};
-    else if (tracker_state == "temp_lost")
-      state_color = {0, 255, 255};
-    else if (tracker_state == "detecting")
-      state_color = {255, 255, 0};
-    else
-      state_color = {0, 0, 255};
+      std::string tracker_state = tracker.state();
+      cv::Scalar state_color;
+      if (tracker_state == "tracking")
+        state_color = {0, 255, 0};
+      else if (tracker_state == "temp_lost")
+        state_color = {0, 255, 255};
+      else if (tracker_state == "detecting")
+        state_color = {255, 255, 0};
+      else
+        state_color = {0, 0, 255};
 
-    tools::draw_text(img, fmt::format("State: {}", tracker_state), {10, 30}, state_color);
-    tools::draw_text(
-      img, fmt::format("Gimbal yaw:{:.2f}, pitch:{:.2f}", euler[0], euler[1]), {10, 60},
-      {255, 255, 255});
-    tools::draw_text(
-      img, fmt::format("Cmd yaw:{:.2f}, pitch:{:.2f}", command.yaw * 57.3, command.pitch * 57.3),
-      {10, 90}, {154, 50, 205});
-
-    if (command.shoot) {
-      tools::draw_text(img, "FIRE", {10, 120}, cv::Scalar(0, 0, 255), 1.2);
-    } else {
-      tools::draw_text(img, "HOLD", {10, 120}, cv::Scalar(200, 200, 200));
-    }
-
-    // ==================== 【关键修改：可视化】====================
-
-   for (const auto & target : targets) {
-  const auto & armor_xyza_list = target.armor_xyza_list();
-
-  for (size_t i = 0; i < armor_xyza_list.size(); ++i) {
-    const Eigen::Vector4d & xyza = armor_xyza_list[i];
-
-    // 1. 画装甲板（绿色）
-    auto image_points = solver.reproject_armor(
-      xyza.head<3>(),
-      xyza[3],
-      target.armor_type,
-      target.name
-    );
-    tools::draw_points(img, image_points, {0, 255, 0});
-
-    // 2. 装甲板中心 → 像素坐标
-    std::vector<cv::Point3f> world_pts = {
-      cv::Point3f(
-        static_cast<float>(xyza[0]),
-        static_cast<float>(xyza[1]),
-        static_cast<float>(xyza[2])
-      )
-    };
-
-    auto pixel_pts = solver.world2pixel(world_pts);
-    if (pixel_pts.empty()) continue;
-
-    cv::Point2f center_pt = pixel_pts[0];
-
-    // 3. 画 id（红字）
-    cv::putText(
-      img,
-      fmt::format("id={}", i),
-      center_pt + cv::Point2f(5, -5),
-      cv::FONT_HERSHEY_SIMPLEX,
-      0.6,
-      cv::Scalar(0, 0, 255),
-      2
-    );
-  }
-}
-
-    //  绘制瞄准点
-    if (!targets.empty() && aimer.debug_aim_point.valid) {
-      Eigen::Vector3d aim_xyz(
-        aimer.debug_aim_point.xyza[0],
-        aimer.debug_aim_point.xyza[1],
-        aimer.debug_aim_point.xyza[2]
+      tools::draw_text(
+        img,
+        fmt::format("State: {}", tracker_state),
+        {10, 30},
+        state_color
       );
 
-      std::vector<cv::Point3f> world_pts = {
-        cv::Point3f(static_cast<float>(aim_xyz.x()),
-                    static_cast<float>(aim_xyz.y()),
-                    static_cast<float>(aim_xyz.z()))
-      };
+      tools::draw_text(
+        img,
+        fmt::format(
+          "Gimbal yaw:{:.2f}, pitch:{:.2f}",
+          euler[0],
+          euler[1]
+        ),
+        {10, 60},
+        {255, 255, 255}
+      );
 
-      // 投影到图像平面
-      auto pixel_pts = solver.world2pixel(world_pts);
+      tools::draw_text(
+        img,
+        fmt::format(
+          "Cmd yaw:{:.2f}, pitch:{:.2f}",
+          command.yaw * 57.3,
+          command.pitch * 57.3
+        ),
+        {10, 90},
+        {154, 50, 205}
+      );
 
-      if (!pixel_pts.empty()) {
-        cv::Point2f pt = pixel_pts[0];
-        // 实心红圆 + 白边（更醒目）
-        cv::circle(img, pt, 5, cv::Scalar(0, 0, 255), -1);      // 红色填充
-        cv::circle(img, pt, 6, cv::Scalar(255, 255, 255), 1);   // 白色轮廓
+      // -------- Debug：装甲板 & id --------
+      for (const auto & target : targets) {
+        const auto & armor_xyza_list = target.armor_xyza_list();
+
+        for (size_t i = 0; i < armor_xyza_list.size(); ++i) {
+          const Eigen::Vector4d & xyza = armor_xyza_list[i];
+
+          auto image_points = solver.reproject_armor(
+            xyza.head<3>(),
+            xyza[3],
+            target.armor_type,
+            target.name
+          );
+          tools::draw_points(img, image_points, {0, 255, 0});
+
+          auto pixel_pts = solver.world2pixel({
+            cv::Point3f(xyza[0], xyza[1], xyza[2])
+          });
+
+          if (!pixel_pts.empty()) {
+            cv::putText(
+              img,
+              fmt::format("id={}", i),
+              pixel_pts[0] + cv::Point2f(5, -5),
+              cv::FONT_HERSHEY_SIMPLEX,
+              0.6,
+              cv::Scalar(0, 0, 255),
+              2
+            );
+          }
+        }
       }
+
+      // -------- Debug：瞄准点 --------
+      if (!targets.empty() && aimer.debug_aim_point.valid) {
+        auto pixel_pts = solver.world2pixel({
+          cv::Point3f(
+            aimer.debug_aim_point.xyza[0],
+            aimer.debug_aim_point.xyza[1],
+            aimer.debug_aim_point.xyza[2]
+          )
+        });
+
+        if (!pixel_pts.empty()) {
+          cv::circle(img, pixel_pts[0], 5, {0, 0, 255}, -1);
+          cv::circle(img, pixel_pts[0], 6, {255, 255, 255}, 1);
+        }
+      }
+
+      // -------- Plotter --------
+      nlohmann::json data;
+      data["fps"] = fps;
+      data["gimbal_yaw"] = euler[0];
+      data["gimbal_pitch"] = euler[1];
+      data["cmd_yaw"] = command.yaw * 57.3;
+      data["cmd_pitch"] = command.pitch * 57.3;
+      data["track_state"] = tracker_state;
+      data["control"] = command.control;
+
+      plotter.plot(data);
+
+      // -------- 显示 --------
+      cv::resize(img, img, {}, 0.5, 0.5);
+      cv::imshow("auto_aim", img);
+      if (cv::waitKey(1) == 'q') break;
     }
-
-    // ==================== 【End 可视化】====================
-
-    // -------------------- Plotter --------------------
-    nlohmann::json data;
-    data["fps"] = fps;
-    data["gimbal_yaw"] = euler[0];
-    data["gimbal_pitch"] = euler[2];
-    data["cmd_yaw"] = command.yaw * 57.3;
-    data["cmd_pitch"] = command.pitch * 57.3;
-    data["track_state"] = tracker_state;
-    data["control"] = command.control;
-
-    plotter.plot(data);
-
-    // -------------------- 显示 --------------------
-    cv::resize(img, img, {}, 0.5, 0.5);
-    cv::imshow("auto_aim", img);
-    if (cv::waitKey(1) == 'q') break;
   }
 
   return 0;

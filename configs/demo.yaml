@@ -48,13 +48,13 @@ max_temp_lost_count: 15
 outpost_max_temp_lost_count: 75
 
 #####-----aimer参数-----#####
-yaw_offset: -1 # degree -2.5
-pitch_offset: 0 # degree 2
+yaw_offset: 0 # degree -2.5
+pitch_offset: -1 # degree 2
 comming_angle: 60 # degree
 leaving_angle: 10 # degree
 decision_speed: 8 # rad/s
-high_speed_delay_time: 0.11 # s
-low_speed_delay_time: 0.12 # s
+high_speed_delay_time: 0.10 # s
+low_speed_delay_time: 0.10 # s
 
 #####-----shooter参数-----#####
 first_tolerance: 2 # 近距离射击容差，degree
@@ -73,7 +73,7 @@ auto_fire: true # 是否由自瞄控制射击
 # vid_pid: "f622:d13a"
 
 camera_name: "daheng"   # <-- 启用大恒相机
-exposure_ms: 3  # 曝光时间，单位是毫秒
+exposure_ms: 5  # 曝光时间，单位是毫秒
 gain: 10.0               # 增益
 vid_pid: "0000:0000"    # GxAPI 通常使用序列号或 IP，但保留此项以兼容现有结构
 

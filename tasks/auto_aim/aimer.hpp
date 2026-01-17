@@ -42,7 +42,7 @@ io::Command aim(
   double high_speed_delay_time_;
   double low_speed_delay_time_;
   double decision_speed_;
-  double max_fire_error_yaw_=0.2;
+  double max_fire_error_yaw_=0.1;
   double max_fire_error_pitch_=0.1;
 
   AimPoint choose_aim_point(const Target & target);

@@ -32,7 +32,6 @@ public:
 private:
   Solver & solver_;
   Color enemy_color_;
-  int temp_miss_count_;
   int min_detect_count_;
   int max_temp_lost_count_;
   int detect_count_;
