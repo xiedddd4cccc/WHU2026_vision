@@ -64,6 +64,7 @@ int main(int argc, char * argv[])
     // -------------------- 云台姿态 --------------------
     constexpr auto IMU_DELAY = 2ms;
     Eigen::Quaterniond gimbal_q = gimbal.q(frame_start-IMU_DELAY);
+    auto gs=gimbal.state();
     //recorder.record(img, gimbal_q, frame_start);
     solver.set_R_gimbal2world(gimbal_q);
     Eigen::Vector3d ypr =
@@ -72,7 +73,7 @@ int main(int argc, char * argv[])
     // -------------------- 自瞄主流程 --------------------
     auto armors = yolo.detect(img, 0);
     auto targets = tracker.track(armors, frame_start);
-    auto command = aimer.aim(targets, frame_start, 12.4, true, ypr);
+    auto command = aimer.aim(targets, frame_start, gs.bullet_speed, true, ypr);
 
     // -------------------- 串口发送 --------------------
     gimbal.send(
@@ -144,7 +145,14 @@ int main(int argc, char * argv[])
           command.pitch * 57.3
         ),
         {10, 90},
-        {154, 50, 205}
+        {77, 255, 100}
+      );
+
+      tools::draw_text(
+        img,
+        fmt::format("Bullet_speed: {:.3f}", gs.bullet_speed),
+        {10, 120},
+        {77, 255, 100}
       );
 
       // -------- Debug：装甲板 & id --------
@@ -202,9 +210,18 @@ int main(int argc, char * argv[])
       {
         auto target =targets.front();
         Eigen::VectorXd x =target.ekf_x();
-        data["r"]=x[8];
-        data["h1"]=x[9];
-        data["h2"]=x[10];
+      data["x"] = x[0];
+      data["vx"] = x[1];
+      data["y"] = x[2];
+      data["vy"] = x[3];
+      data["z"] = x[4];
+      data["vz"] = x[5];
+      data["a"] = x[6] * 57.3;
+      data["w"] = x[7];
+      data["r"] = x[8];
+      data["l"] = x[9];
+      data["h"] = x[10];
+      data["last_id"] = target.last_id;
       } 
       data["fps"] = fps;
       data["gimbal_yaw"] = euler[0];
@@ -213,6 +230,7 @@ int main(int argc, char * argv[])
       data["cmd_pitch"] = command.pitch * 57.3;
       data["track_state"] = tracker_state;
       data["control"] = command.control;
+      data["fire"]=command.shoot;
 
       plotter.plot(data);
 
