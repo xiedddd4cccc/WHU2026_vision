@@ -21,7 +21,7 @@ using namespace std::chrono_literals;
 const std::string keys =
   "{help h usage ? |                   | 输出命令行参数说明 }"
   "{@config-path   | configs/demo.yaml | yaml配置文件路径}"
-  "{no-vis         | false             | 关闭所有可视化（draw / plot / imshow）}";
+  "{vis            | false             | 所有可视化（draw / plot / imshow）}";
 
 int main(int argc, char * argv[])
 {
@@ -33,7 +33,7 @@ int main(int argc, char * argv[])
   }
 
   auto config_path = cli.get<std::string>(0);
-  bool enable_vis = !cli.get<bool>("no-vis");
+  bool enable_vis = cli.get<bool>("vis");
 
   tools::Plotter plotter;
   tools::Exiter exiter;

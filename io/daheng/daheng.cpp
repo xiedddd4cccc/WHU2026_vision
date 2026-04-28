@@ -144,7 +144,7 @@ DaHeng::DaHeng(double exposure_ms, double gain, const std::string& vid_pid)
     // 1. 生成 Gamma 2.2 LUT
     lut_content_.resize(256);
     VxUint16 lut_len = 256;
-    if (DxGetLut(0, 0.8, 0, lut_content_.data(), &lut_len) == DX_OK) {
+    if (DxGetLut(0, 1.5, 0, lut_content_.data(), &lut_len) == DX_OK) {
         std::cout << "[DaHeng] Software Gamma LUT (2.2) generated successfully." << std::endl;
     } else {
         std::cerr << "[DaHeng] Failed to generate Gamma LUT!" << std::endl;

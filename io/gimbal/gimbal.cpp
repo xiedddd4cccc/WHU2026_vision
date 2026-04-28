@@ -253,7 +253,7 @@ void Gimbal::read_thread()
 
 void Gimbal::reconnect()
 {
-  int max_retry_count = 10;
+  int max_retry_count = 1200;
   for (int i = 0; i < max_retry_count && !quit_; ++i) {
     // tools::logger()->warn("[Gimbal] Reconnecting serial, attempt {}/{}...", i + 1, max_retry_count);
     try {

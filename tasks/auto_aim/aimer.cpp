@@ -149,12 +149,12 @@ namespace auto_aim
 
     int sig = (check_target.ekf_x()[7] >= 0) ? +1 : -1;
 
-    double fire_window = (std::abs(check_target.ekf_x()[7]) > 5.0) ? 0.02 : 0.015;
+    double fire_window = (std::abs(check_target.ekf_x()[7]) > 5.0) ? 0.015 : 0.010;
 
     should_shoot = false;
 
     // 理想的装甲板法线方向应该是与子弹飞行方向 完全相反
-    double ideal_armor_yaw = tools::limit_rad(geo_yaw + M_PI);
+    double ideal_armor_yaw = tools::limit_rad(geo_yaw);
 
     for (auto const &armor : check_target.armor_xyza_list())
     {
