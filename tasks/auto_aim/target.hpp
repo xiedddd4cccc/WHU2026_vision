@@ -44,16 +44,35 @@ public:
   bool isinit = false;
 
   bool checkinit();
+  bool state();
+  std::string state_str();
 
 private:
+  bool diverged_raw() const;
   int armor_num_;
   int switch_count_;
   int update_count_;
+
+  enum State
+  {
+    LOST,
+    DETECTING,
+    TEMP_LOST,
+    TRACKING
+  };
 
   bool is_switch_, is_converged_;
 
   tools::ExtendedKalmanFilter ekf_;
   std::chrono::steady_clock::time_point t_;
+
+  /// Radius sanity band (meters); diverged_raw uses these bounds (instant).
+  static constexpr double kRadiusLowEnter = 0.05;
+  static constexpr double kRadiusHighEnter = 0.5;
+  /// Consecutive diverged_raw violations required before diverged() becomes true.
+  static constexpr int kDivergedBadFrames = 10;
+
+  mutable int diverged_bad_streak_{0};
 
   void update_ypda(const Armor & armor, int id);  // yaw pitch distance angle
 

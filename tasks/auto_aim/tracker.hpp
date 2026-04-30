@@ -29,6 +29,8 @@ public:
     const std::vector<omniperception::DetectionResult> & detection_queue, std::list<Armor> & armors,
     std::chrono::steady_clock::time_point t, bool use_enemy_color = true);
 
+  bool gimbal_enabled() const noexcept;
+
 private:
   Solver & solver_;
   Color enemy_color_;
@@ -48,6 +50,7 @@ private:
   bool set_target(std::list<Armor> & armors, std::chrono::steady_clock::time_point t);
 
   bool update_target(std::list<Armor> & armors, std::chrono::steady_clock::time_point t);
+
 };
 
 }  // namespace auto_aim

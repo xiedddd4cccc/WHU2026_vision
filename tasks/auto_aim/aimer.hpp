@@ -4,6 +4,7 @@
 #include <Eigen/Dense>
 #include <chrono>
 #include <list>
+#include <optional>
 
 #include "io/cboard.hpp"
 #include "io/command.hpp"
@@ -32,9 +33,13 @@ io::Command aim(
     Eigen::Vector3d ypr
   );
 
-  private : double yaw_offset_;
+private:
+  double yaw_offset_;
   std::optional<double> left_yaw_offset_, right_yaw_offset_;
   double pitch_offset_;
+  /// pitch_cmd = alpha * prev + (1-alpha) * raw; alpha near 1 = lighter jitter rejection
+  double pitch_lpf_alpha_;
+  std::optional<double> pitch_lpf_prev_;
   double comming_angle_;
   double leaving_angle_;
   double lock_id_ = -1;

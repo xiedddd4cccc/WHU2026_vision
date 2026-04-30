@@ -95,7 +95,7 @@ void Target::predict(double dt)
   // https://github.com/rlabbe/Kalman-and-Bayesian-Filters-in-Python/blob/master/07-Kalman-Filter-Math.ipynb
   double v1, v2;
   if (name == ArmorName::outpost) {
-    v1 = 0;   // 前哨站加速度方差
+    v1 = 0;  // 前哨站加速度方差
     v2 = 0;  // 前哨站角加速度方差
   } else {
     v1 = 100;  // 加速度方差
@@ -105,7 +105,7 @@ void Target::predict(double dt)
   auto b = dt * dt * dt / 2;
   auto c = dt * dt;
 
-  double v3 =0;
+  double v3 = 0;
   // 预测过程噪声偏差的方差
   // clang-format off
   Eigen::MatrixXd Q{
@@ -240,25 +240,40 @@ std::vector<Eigen::Vector4d> Target::armor_xyza_list() const
   return _armor_xyza_list;
 }
 
+bool Target::diverged_raw() const
+{
+  const double r = ekf_.x[8];
+  const double rl = ekf_.x[8] + ekf_.x[9];
+  return !(r > kRadiusLowEnter && r < kRadiusHighEnter && rl > kRadiusLowEnter && rl < kRadiusHighEnter);
+}
+
 bool Target::diverged() const
 {
-  auto r_ok = ekf_.x[8] > 0.05 && ekf_.x[8] < 0.5;
-  auto l_ok = ekf_.x[8] + ekf_.x[9] > 0.05 && ekf_.x[8] + ekf_.x[9] < 0.5;
+  const double r = ekf_.x[8];
+  const double rl = ekf_.x[8] + ekf_.x[9];
 
-  if (r_ok && l_ok) return false;
+  if (!diverged_raw()) {
+    diverged_bad_streak_ = 0;
+    return false;
+  }
 
-  tools::logger()->debug("[Target] r={:.3f}, l={:.3f}", ekf_.x[8], ekf_.x[9]);
-  return true;
+  diverged_bad_streak_++;
+  const bool out = diverged_bad_streak_ >= kDivergedBadFrames;
+  if (out) {
+    tools::logger()->debug(
+      "[Target] diverged after {} bad frames: r={:.3f}, rl={:.3f}", diverged_bad_streak_, r, rl);
+  }
+  return out;
 }
 
 bool Target::convergened()
 {
-  if (this->name != ArmorName::outpost && update_count_ > 3 && !this->diverged()) {
+  if (this->name != ArmorName::outpost && update_count_ > 3 && !this->diverged_raw()) {
     is_converged_ = true;
   }
 
   //前哨站特殊判断
-  if (this->name == ArmorName::outpost && update_count_ > 10 && !this->diverged()) {
+  if (this->name == ArmorName::outpost && update_count_ > 10 && !this->diverged_raw()) {
     is_converged_ = true;
   }
 
@@ -282,11 +297,11 @@ Eigen::Vector3d Target::h_armor_xyz(const Eigen::VectorXd & x, int id) const
     armor_z = x[4] + x[10];
   } else if (armor_num_ == 3) {
     if (id == 0)
-      armor_z = x[4];  
+      armor_z = x[4];
     else if (id == 1)
-      armor_z = x[4] + x[9];  
+      armor_z = x[4] + x[9];
     else
-      armor_z = x[4] + x[10];  
+      armor_z = x[4] + x[10];
   }
 
   return {armor_x, armor_y, armor_z};
@@ -311,24 +326,22 @@ Eigen::MatrixXd Target::h_jacobian(const Eigen::VectorXd & x, int id) const
 
   if (armor_num_ == 3) {
     if (id == 1) {
-      dz_dl = 1.0;   // z = z0 + x[9]
+      dz_dl = 1.0;  // z = z0 + x[9]
     } else if (id == 2) {
-      dz_dh = 1.0;   // z = z0 + x[10] 
+      dz_dh = 1.0;  // z = z0 + x[10]
     }
     // id == 0: 保持 0
-  }
-  else if (armor_num_ == 4) {
+  } else if (armor_num_ == 4) {
     if (id == 1 || id == 3) {
-      dz_dh = 1.0;   // z = z0 + x[10]
+      dz_dh = 1.0;  // z = z0 + x[10]
     }
   }
 
   Eigen::MatrixXd H_armor_xyza{
-    {1, 0, 0, 0, 0, 0, dx_da, 0, dx_dr, dx_dl,     0},
-    {0, 0, 1, 0, 0, 0, dy_da, 0, dy_dr, dy_dl,     0},
-    {0, 0, 0, 0, 1, 0,     0, 0,     0, dz_dl, dz_dh},
-    {0, 0, 0, 0, 0, 0,     1, 0,     0,     0,     0}
-  };
+    {1, 0, 0, 0, 0, 0, dx_da, 0, dx_dr, dx_dl, 0},
+    {0, 0, 1, 0, 0, 0, dy_da, 0, dy_dr, dy_dl, 0},
+    {0, 0, 0, 0, 1, 0, 0, 0, 0, dz_dl, dz_dh},
+    {0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0}};
 
   Eigen::VectorXd armor_xyz = h_armor_xyz(x, id);
   Eigen::MatrixXd H_armor_ypd = tools::xyz2ypd_jacobian(armor_xyz);
@@ -337,8 +350,7 @@ Eigen::MatrixXd Target::h_jacobian(const Eigen::VectorXd & x, int id) const
     {H_armor_ypd(0, 0), H_armor_ypd(0, 1), H_armor_ypd(0, 2), 0},
     {H_armor_ypd(1, 0), H_armor_ypd(1, 1), H_armor_ypd(1, 2), 0},
     {H_armor_ypd(2, 0), H_armor_ypd(2, 1), H_armor_ypd(2, 2), 0},
-    {                0,                 0,                 0, 1}
-  };
+    {0, 0, 0, 1}};
 
   return H_armor_ypda * H_armor_xyza;
 }
